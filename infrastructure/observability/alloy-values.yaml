@@ -1,0 +1,304 @@
+cluster:
+  name: talos-local
+
+# Enable cluster metrics collection
+clusterMetrics:
+  enabled: true
+
+# Enable pod logs collection
+clusterEvents:
+  enabled: true
+
+# Configure destinations
+externalServices:
+  prometheus:
+    host: http://prometheus.monitoring.svc.cluster.local:9090
+    protocol: remote_write
+  loki:
+    host: http://loki.monitoring.svc.cluster.local:3100
+    protocol: loki
+
+alloy:
+  configMap:
+    create: true
+    content: |
+      // Kubernetes service discovery for pods
+      discovery.kubernetes "pods" {
+        role = "pod"
+      }
+
+      // Kubernetes service discovery for services
+      discovery.kubernetes "services" {
+        role = "service"
+      }
+
+      // Filter pods with prometheus.io/scrape annotation
+      discovery.relabel "filter_pods" {
+        targets = discovery.kubernetes.pods.targets
+
+        // CRITICAL: Keep only pods running on this Alloy pod's node
+        // This prevents duplicate scrapes when running as DaemonSet
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          action        = "keep"
+          regex         = env("HOSTNAME")
+        }
+
+        // Keep only pods with scrape annotation set to true
+        rule {
+          source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape"]
+          action        = "keep"
+          regex         = "true"
+        }
+
+        // Use custom port if specified
+        rule {
+          source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_port", "__meta_kubernetes_pod_ip"]
+          action        = "replace"
+          regex         = "(\\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4}|([0-9]{1,3}\\.){3}[0-9]{1,3})"
+          replacement   = "[$2]:$1"
+          target_label  = "__address__"
+        }
+
+        // Use custom metrics path if specified
+        rule {
+          source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_path"]
+          action        = "replace"
+          target_label  = "__metrics_path__"
+          regex         = "(.+)"
+        }
+
+        // Add namespace label
+        rule {
+          source_labels = ["__meta_kubernetes_namespace"]
+          action        = "replace"
+          target_label  = "namespace"
+        }
+
+        // Add pod name label
+        rule {
+          source_labels = ["__meta_kubernetes_pod_name"]
+          action        = "replace"
+          target_label  = "pod"
+        }
+
+        // Add container name label
+        rule {
+          source_labels = ["__meta_kubernetes_pod_container_name"]
+          action        = "replace"
+          target_label  = "container"
+        }
+
+        // Add node name label
+        rule {
+          source_labels = ["__meta_kubernetes_pod_node_name"]
+          action        = "replace"
+          target_label  = "node"
+        }
+      }
+
+      // Scrape metrics from discovered pods
+      prometheus.scrape "pods" {
+        targets    = discovery.relabel.filter_pods.output
+        forward_to = [prometheus.remote_write.default.receiver]
+
+        scrape_interval = "30s"
+        scrape_timeout  = "10s"
+      }
+
+      // Remote write metrics to Prometheus
+      prometheus.remote_write "default" {
+        endpoint {
+          url = "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/write"
+
+          queue_config {
+            capacity             = 10000
+            max_shards           = 10
+            min_shards           = 1
+            max_samples_per_send = 5000
+            batch_send_deadline  = "5s"
+            min_backoff          = "30ms"
+            max_backoff          = "5s"
+          }
+        }
+      }
+
+      // Collect logs from all pods
+      loki.source.kubernetes "pods" {
+        targets    = discovery.kubernetes.pods.targets
+        forward_to = [loki.process.add_labels.receiver]
+      }
+
+      // Add additional labels to logs
+      loki.process "add_labels" {
+        stage.docker {}
+
+        stage.labels {
+          values = {
+            namespace = "",
+            pod       = "",
+            container = "",
+            node      = "",
+          }
+        }
+
+        forward_to = [loki.write.default.receiver]
+      }
+
+      // Push logs to Loki
+      loki.write "default" {
+        endpoint {
+          url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
+        }
+      }
+
+      // Self-monitoring - expose metrics endpoint
+      prometheus.exporter.self "alloy" {}
+
+      prometheus.scrape "alloy" {
+        targets    = prometheus.exporter.self.alloy.targets
+        forward_to = [prometheus.remote_write.default.receiver]
+      }
+
+      // ============================================================================
+      // NODE METRICS via cAdvisor/Kubelet (replaces node-exporter)
+      // ============================================================================
+
+      // Discover Kubernetes nodes
+      discovery.kubernetes "nodes" {
+        role = "node"
+      }
+
+      // Scrape kubelet metrics (container/node metrics)
+      discovery.relabel "kubelet" {
+        targets = discovery.kubernetes.nodes.targets
+
+        // CRITICAL: Keep only the node this Alloy pod is running on
+        // This prevents duplicate scrapes when running as DaemonSet
+        // Uses HOSTNAME env var which contains the node name in DaemonSet
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          action        = "keep"
+          regex         = env("HOSTNAME")
+        }
+
+        // Use kubelet HTTPS endpoint
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label  = "__address__"
+          replacement   = "kubernetes.default.svc.cluster.local:443"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          regex         = "(.+)"
+          target_label  = "__metrics_path__"
+          replacement   = "/api/v1/nodes/$1/proxy/metrics"
+        }
+
+        // Add node label
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label  = "node"
+        }
+
+        rule {
+          target_label = "job"
+          replacement  = "kubelet"
+        }
+      }
+
+      prometheus.scrape "kubelet" {
+        targets         = discovery.relabel.kubelet.output
+        forward_to      = [prometheus.remote_write.default.receiver]
+        scrape_interval = "30s"
+        scrape_timeout  = "10s"
+        scheme          = "https"
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+        tls_config {
+          ca_file              = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+          insecure_skip_verify = false
+        }
+      }
+
+      // Scrape cAdvisor metrics (container resource usage)
+      discovery.relabel "cadvisor" {
+        targets = discovery.kubernetes.nodes.targets
+
+        // CRITICAL: Keep only the node this Alloy pod is running on
+        // This prevents duplicate scrapes when running as DaemonSet
+        // Uses HOSTNAME env var which contains the node name in DaemonSet
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          action        = "keep"
+          regex         = env("HOSTNAME")
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label  = "__address__"
+          replacement   = "kubernetes.default.svc.cluster.local:443"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          regex         = "(.+)"
+          target_label  = "__metrics_path__"
+          replacement   = "/api/v1/nodes/$1/proxy/metrics/cadvisor"
+        }
+
+        rule {
+          source_labels = ["__meta_kubernetes_node_name"]
+          target_label  = "node"
+        }
+
+        rule {
+          target_label = "job"
+          replacement  = "cadvisor"
+        }
+      }
+
+      prometheus.scrape "cadvisor" {
+        targets         = discovery.relabel.cadvisor.output
+        forward_to      = [prometheus.remote_write.default.receiver]
+        scrape_interval = "30s"
+        scrape_timeout  = "10s"
+        scheme          = "https"
+        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+        tls_config {
+          ca_file              = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
+          insecure_skip_verify = false
+        }
+      }
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  serviceMonitor:
+    enabled: false
+
+  controller:
+    type: deployment
+    replicas: 1
+
+  alloy:
+    clustering:
+      enabled: false
+
+    mounts:
+      varlog: true
+
+# RBAC permissions for service discovery
+rbac:
+  create: true
+
+serviceAccount:
+  create: true
+  name: alloy

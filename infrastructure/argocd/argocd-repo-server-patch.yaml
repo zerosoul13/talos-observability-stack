@@ -1,0 +1,19 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: argocd-repo-server
+  namespace: argocd
+spec:
+  template:
+    spec:
+      volumes:
+        - name: local-apps
+          persistentVolumeClaim:
+            claimName: local-apps
+      containers:
+      - name: argocd-repo-server
+        volumeMounts:
+          - name: local-apps
+            mountPath: /mnt/local-apps
+            readOnly: true

@@ -1,0 +1,25 @@
+# Kube-state-metrics configuration
+# Provides Kubernetes object metrics (pods, deployments, nodes, etc.)
+
+# Disable ServiceMonitor (we don't have Prometheus Operator)
+prometheus:
+  monitor:
+    enabled: false
+
+# Add Prometheus scrape annotations for Alloy auto-discovery
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8080"
+  prometheus.io/path: "/metrics"
+
+# Resource limits
+resources:
+  limits:
+    cpu: 100m
+    memory: 128Mi
+  requests:
+    cpu: 50m
+    memory: 64Mi
+
+# Single replica is sufficient for local dev
+replicas: 1
