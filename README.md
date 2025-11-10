@@ -8,10 +8,14 @@ A complete, ready-to-go **Grafana Alloy** platform that allows you to test and e
 
 ### Key Highlights
 
-✅ **Grafana Alloy Operator** - Full CRD-based Alloy deployment and management
-✅ **Self-Monitoring Demo** - Custom Alloy collectors monitoring the observability stack itself
-✅ **Production-Ready** - Talos Linux + Kubernetes v1.31.1
-✅ **Zero Complexity** - No ingress setup, no DNS hacks, just pure Alloy power
+✅ **Grafana Alloy Operator** - Full CRD-based Alloy deployment and management  
+
+✅ **Self-Monitoring Demo** - Custom Alloy collectors monitoring the observability stack itself  
+
+✅ **Production-Ready** - Talos Linux + Kubernetes v1.31.1  
+
+✅ **Zero Complexity** - No ingress setup, no DNS hacks, just pure Alloy power  
+
 ✅ **5-Minute Setup** - From zero to full stack with self-monitoring
 
 ## 🚀 Quick Start
