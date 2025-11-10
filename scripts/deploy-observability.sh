@@ -204,15 +204,15 @@ deploy_standalone_monitoring() {
 
     # Deploy Prometheus self-monitoring
     log_info "Deploying Prometheus self-monitoring..."
-    kubectl apply -f "${INFRA_DIR}/prometheus-standalone-monitoring.yaml"
+    kubectl apply -f "${INFRA_DIR}/prometheus-observability.yaml"
 
     # Deploy Loki self-monitoring
     log_info "Deploying Loki self-monitoring..."
-    kubectl apply -f "${INFRA_DIR}/loki-standalone-monitoring.yaml"
+    kubectl apply -f "${INFRA_DIR}/loki-observability.yaml"
 
     # Deploy Grafana self-monitoring
     log_info "Deploying Grafana self-monitoring..."
-    kubectl apply -f "${INFRA_DIR}/grafana-standalone-monitoring.yaml"
+    kubectl apply -f "${INFRA_DIR}/grafana-observability.yaml"
 
     # Wait for standalone Alloy instances to be ready
     sleep 5

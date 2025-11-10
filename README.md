@@ -115,7 +115,7 @@ Three custom Alloy instances demonstrate advanced Alloy configuration:
 
 #### 1. Prometheus Self-Monitoring
 ```yaml
-# File: infrastructure/observability/prometheus-standalone-monitoring.yaml
+# File: infrastructure/observability/prometheus-observability.yaml
 apiVersion: collectors.grafana.com/v1alpha1
 kind: Alloy
 metadata:
@@ -132,7 +132,7 @@ spec:
 
 #### 2. Loki Self-Monitoring
 ```yaml
-# File: infrastructure/observability/loki-standalone-monitoring.yaml
+# File: infrastructure/observability/loki-observability.yaml
 apiVersion: collectors.grafana.com/v1alpha1
 kind: Alloy
 metadata:
@@ -149,7 +149,7 @@ spec:
 
 #### 3. Grafana Self-Monitoring
 ```yaml
-# File: infrastructure/observability/grafana-standalone-monitoring.yaml
+# File: infrastructure/observability/grafana-observability.yaml
 apiVersion: collectors.grafana.com/v1alpha1
 kind: Alloy
 metadata:
@@ -260,9 +260,9 @@ talos/
 │       ├── prometheus-*.yaml             # Prometheus manifests
 │       ├── loki-*.yaml                   # Loki manifests
 │       ├── grafana-*.yaml                # Grafana manifests
-│       ├── prometheus-standalone-monitoring.yaml  # ⭐ Demo: Prometheus self-monitoring
-│       ├── loki-standalone-monitoring.yaml        # ⭐ Demo: Loki self-monitoring
-│       └── grafana-standalone-monitoring.yaml     # ⭐ Demo: Grafana self-monitoring
+│       ├── prometheus-observability.yaml  # ⭐ Demo: Prometheus self-monitoring
+│       ├── loki-observability.yaml        # ⭐ Demo: Loki self-monitoring
+│       └── grafana-observability.yaml     # ⭐ Demo: Grafana self-monitoring
 ├── scripts/
 │   ├── deploy-talos-native.sh           # Cluster deployment
 │   ├── destroy-talos-native.sh          # Cluster teardown
