@@ -24,14 +24,15 @@ helm repo update
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
 
 # Install or upgrade Grafana Alloy
-echo -e "${GREEN}[INFO]${NC} Installing Grafana Alloy k8s-monitoring chart..."
+echo -e "${GREEN}[INFO]${NC} Installing Grafana k8s-monitoring chart..."
 helm upgrade --install alloy grafana/k8s-monitoring \
   --namespace monitoring \
   --create-namespace \
-  --values "${SCRIPT_DIR}/alloy-values.yaml" \
-  --version ^1 \
+  -f /home/anrodriguez/Code/demo-projects/talos/infrastructure/observability/alloy-values.yaml \
+  --version 3.5.5 \
+  --atomic \
   --wait \
-  --timeout 5m
+  --timeout 10m
 
 echo -e "${GREEN}[SUCCESS]${NC} Grafana Alloy installed successfully!"
 

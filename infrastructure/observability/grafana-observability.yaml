@@ -1,0 +1,45 @@
+---
+apiVersion: collectors.grafana.com/v1alpha1
+kind: Alloy
+metadata:
+  name: grafana-observability
+  namespace: monitoring
+spec:
+  alloy:
+    configMap:
+      content: |-
+        discovery.kubernetes "grafana" {
+          role = "pod"
+          
+          selectors {
+            role = "pod"
+            label = "app=grafana"
+          }
+
+          namespaces {
+            names = ["monitoring"]
+          }
+        }
+
+        prometheus.scrape "grafana" {
+          targets    = discovery.kubernetes.grafana.targets
+          forward_to = [prometheus.relabel.grafana_job.receiver]
+        }
+
+        prometheus.relabel "grafana_job" {
+          forward_to = [prometheus.remote_write.grafana_prom.receiver] 
+
+          rule {
+            source_labels = ["job"]
+            target_label  = "job"
+            replacement   = "integrations/unix"
+          }
+        }
+
+        prometheus.remote_write "grafana_prom" {
+          endpoint {
+            url = "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/write"
+          }
+        }
+      
+      

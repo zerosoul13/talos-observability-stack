@@ -15,23 +15,3 @@ data:
       external_labels:
         cluster: 'talos-local'
         environment: 'development'
-
-    # Remote write configuration - receives metrics from Grafana Alloy
-    remote_write:
-      - url: http://localhost:9090/api/v1/write
-
-    # Minimal scrape config - Alloy handles service discovery
-    scrape_configs:
-      # Self-monitoring
-      - job_name: 'prometheus'
-        static_configs:
-          - targets: ['localhost:9090']
-            labels:
-              component: 'prometheus'
-
-      # Monitor Grafana Alloy
-      - job_name: 'alloy'
-        static_configs:
-          - targets: ['alloy.monitoring.svc.cluster.local:12345']
-            labels:
-              component: 'alloy'

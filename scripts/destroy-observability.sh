@@ -115,13 +115,6 @@ remove_resources() {
     kubectl delete -f "${SCRIPT_DIR}/../infrastructure/observability/prometheus-deployment.yaml" --ignore-not-found=true
     kubectl delete -f "${SCRIPT_DIR}/../infrastructure/observability/prometheus-config.yaml" --ignore-not-found=true
 
-    if [ "$KEEP_DATA" = false ]; then
-        log_info "Removing PersistentVolumeClaims (data will be deleted)..."
-        kubectl delete -f "${SCRIPT_DIR}/../infrastructure/observability/loki-pvc.yaml" --ignore-not-found=true
-        kubectl delete -f "${SCRIPT_DIR}/../infrastructure/observability/prometheus-pvc.yaml" --ignore-not-found=true
-    else
-        log_info "Keeping PersistentVolumeClaims (data preserved)"
-    fi
 
     # Wait for pods to terminate
     log_info "Waiting for pods to terminate..."
@@ -169,7 +162,6 @@ show_status() {
         echo -e "To view remaining PVCs:"
         echo -e "  ${BLUE}kubectl get pvc -n monitoring${NC}\n"
         echo -e "To delete PVCs manually:"
-        echo -e "  ${BLUE}kubectl delete pvc -n monitoring prometheus-pvc loki-pvc${NC}\n"
     fi
 
     if kubectl get namespace monitoring &>/dev/null; then

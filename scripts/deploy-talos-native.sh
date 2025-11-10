@@ -11,7 +11,7 @@ NC='\033[0m'
 # Configuration
 CLUSTER_NAME="talos-local"
 KUBERNETES_VERSION="1.31.1"
-WORKERS=2
+WORKERS=1
 
 log_info() { echo -e "${GREEN}[INFO]${NC} $1"; }
 log_warn() { echo -e "${YELLOW}[WARN]${NC} $1"; }
@@ -41,23 +41,6 @@ main() {
     log_info "Cluster created successfully!"
     echo
 
-    # Install storage provisioner
-    log_info "Installing local-path-provisioner..."
-    kubectl apply -f https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.28/deploy/local-path-storage.yaml
-
-    # Wait for it
-    kubectl wait --for=condition=ready pod \
-        -l app=local-path-provisioner \
-        -n local-path-storage \
-        --timeout=120s 2>/dev/null || log_warn "Provisioner still starting (this is OK)"
-
-    # Set as default
-    kubectl patch storageclass local-path \
-        -p '{"metadata": {"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}' 2>/dev/null || true
-
-    log_info "Storage provisioner installed"
-    echo
-
     # Summary
     log_info "================================================================"
     log_info "Talos Cluster Ready!"
@@ -73,7 +56,6 @@ main() {
     echo "  talosctl --context ${CLUSTER_NAME} health"
     echo
     log_info "Next Steps:"
-    echo "  make deploy-traefik           # Deploy ingress"
     echo "  make deploy-observability     # Deploy monitoring stack"
     echo
     log_info "To destroy: talosctl cluster destroy --name ${CLUSTER_NAME}"

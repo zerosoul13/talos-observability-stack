@@ -76,11 +76,20 @@ create_namespace() {
 
     if kubectl get namespace monitoring &>/dev/null; then
         log_info "Namespace 'monitoring' already exists"
+        # Ensure PodSecurity labels are set for ephemeral cluster
+        kubectl label namespace monitoring pod-security.kubernetes.io/enforce=privileged --overwrite
+        kubectl label namespace monitoring pod-security.kubernetes.io/audit=privileged --overwrite
+        kubectl label namespace monitoring pod-security.kubernetes.io/warn=privileged --overwrite
+        log_info "Updated PodSecurity labels for ephemeral cluster usage"
     else
         log_info "Creating namespace 'monitoring'..."
         kubectl create namespace monitoring
         kubectl label namespace monitoring name=monitoring
-        log_info "Namespace created successfully"
+        # Set privileged PodSecurity for ephemeral cluster (node-exporter needs host access)
+        kubectl label namespace monitoring pod-security.kubernetes.io/enforce=privileged
+        kubectl label namespace monitoring pod-security.kubernetes.io/audit=privileged
+        kubectl label namespace monitoring pod-security.kubernetes.io/warn=privileged
+        log_info "Namespace created successfully with privileged PodSecurity (ephemeral cluster)"
     fi
 }
 
@@ -88,46 +97,59 @@ create_namespace() {
 deploy_prometheus() {
     log_step "Step 3: Deploying Prometheus"
 
-    log_info "Applying Prometheus manifests..."
-    kubectl apply -f "${INFRA_DIR}/prometheus-pvc.yaml"
-    kubectl apply -f "${INFRA_DIR}/prometheus-config.yaml"
-    kubectl apply -f "${INFRA_DIR}/prometheus-deployment.yaml"
-    kubectl apply -f "${INFRA_DIR}/prometheus-service.yaml"
+    if kubectl get deployment prometheus -n monitoring &>/dev/null && \
+       kubectl get deployment prometheus -n monitoring -o jsonpath='{.status.readyReplicas}' | grep -q "1"; then
+        log_info "Prometheus deployment already exists and is ready, skipping deployment."
+    else
+        log_info "Applying Prometheus manifests..."
+        kubectl apply -f "${INFRA_DIR}/prometheus-config.yaml"
+        kubectl apply -f "${INFRA_DIR}/prometheus-deployment.yaml"
+        kubectl apply -f "${INFRA_DIR}/prometheus-service.yaml"
 
-    wait_for_pods "monitoring" "app=prometheus" 180
+        wait_for_pods "monitoring" "app=prometheus" 180
 
-    log_info "Prometheus deployed successfully!"
+        log_info "Prometheus deployed successfully!"
+    fi
 }
 
 # Deploy Loki
 deploy_loki() {
     log_step "Step 4: Deploying Loki"
 
-    log_info "Applying Loki manifests..."
-    kubectl apply -f "${INFRA_DIR}/loki-pvc.yaml"
-    kubectl apply -f "${INFRA_DIR}/loki-config.yaml"
-    kubectl apply -f "${INFRA_DIR}/loki-deployment.yaml"
-    kubectl apply -f "${INFRA_DIR}/loki-service.yaml"
+    if kubectl get deployment loki -n monitoring &>/dev/null && \
+       kubectl get deployment loki -n monitoring -o jsonpath='{.status.readyReplicas}' | grep -q "1"; then
+        log_info "Loki deployment already exists and is ready, skipping deployment."
+    else
+        log_info "Applying Loki manifests..."
+        kubectl apply -f "${INFRA_DIR}/loki-config.yaml"
+        kubectl apply -f "${INFRA_DIR}/loki-deployment.yaml"
+        kubectl apply -f "${INFRA_DIR}/loki-service.yaml"
 
-    wait_for_pods "monitoring" "app=loki" 180
+        wait_for_pods "monitoring" "app=loki" 180
 
-    log_info "Loki deployed successfully!"
+        log_info "Loki deployed successfully!"
+    fi
 }
 
 # Deploy Grafana
 deploy_grafana() {
     log_step "Step 5: Deploying Grafana"
 
-    log_info "Applying Grafana manifests..."
-    kubectl apply -f "${INFRA_DIR}/grafana-datasources.yaml"
-    kubectl apply -f "${INFRA_DIR}/grafana-dashboards-config.yaml"
-    kubectl apply -f "${INFRA_DIR}/grafana-dashboards.yaml"
-    kubectl apply -f "${INFRA_DIR}/grafana-deployment.yaml"
-    kubectl apply -f "${INFRA_DIR}/grafana-service.yaml"
+    if kubectl get deployment grafana -n monitoring &>/dev/null && \
+       kubectl get deployment grafana -n monitoring -o jsonpath='{.status.readyReplicas}' | grep -q "1"; then
+        log_info "Grafana deployment already exists and is ready, skipping deployment."
+    else
+        log_info "Applying Grafana manifests..."
+        kubectl apply -f "${INFRA_DIR}/grafana-datasources.yaml"
+        kubectl apply -f "${INFRA_DIR}/grafana-dashboards-config.yaml"
+        kubectl apply -f "${INFRA_DIR}/grafana-dashboards.yaml"
+        kubectl apply -f "${INFRA_DIR}/grafana-deployment.yaml"
+        kubectl apply -f "${INFRA_DIR}/grafana-service.yaml"
 
-    wait_for_pods "monitoring" "app=grafana" 180
+        wait_for_pods "monitoring" "app=grafana" 180
 
-    log_info "Grafana deployed successfully!"
+        log_info "Grafana deployed successfully!"
+    fi
 }
 
 # Deploy Grafana Alloy
@@ -145,16 +167,80 @@ deploy_alloy() {
     chmod +x "${INFRA_DIR}/alloy-helm-install.sh"
     "${INFRA_DIR}/alloy-helm-install.sh"
 
-    # Wait for Alloy to be ready
+    # Wait for Alloy Operator to be ready
     sleep 5
-    wait_for_pods "monitoring" "app.kubernetes.io/name=alloy" 180
+    wait_for_pods "monitoring" "app.kubernetes.io/name=alloy-operator" 180
+
+    # Wait for Alloy instances to be created and ready
+    log_info "Waiting for Alloy instances to be created..."
+    sleep 10
+
+    log_info "Checking Alloy instance status..."
+    for i in {1..30}; do
+        READY_COUNT=$(kubectl get alloys -n monitoring -o json 2>/dev/null | jq -r '[.items[] | select(.status.conditions[]? | select(.type=="Ready" and .status=="True"))] | length' 2>/dev/null || echo "0")
+        TOTAL_COUNT=$(kubectl get alloys -n monitoring --no-headers 2>/dev/null | wc -l)
+
+        if [ "$READY_COUNT" -ge 3 ] && [ "$TOTAL_COUNT" -ge 3 ]; then
+            log_info "All Alloy instances are ready!"
+            break
+        fi
+
+        if [ $i -eq 30 ]; then
+            log_warn "Timeout waiting for all Alloy instances, but continuing..."
+            kubectl get alloys -n monitoring 2>/dev/null || true
+        fi
+
+        sleep 2
+    done
 
     log_info "Grafana Alloy deployed successfully!"
 }
 
+# Deploy Standalone Monitoring (Self-monitoring for observability stack)
+deploy_standalone_monitoring() {
+    log_step "Step 7: Deploying Standalone Monitoring"
+
+    log_info "Deploying custom Alloy collectors for observability stack self-monitoring..."
+
+    # Deploy Prometheus self-monitoring
+    log_info "Deploying Prometheus self-monitoring..."
+    kubectl apply -f "${INFRA_DIR}/prometheus-standalone-monitoring.yaml"
+
+    # Deploy Loki self-monitoring
+    log_info "Deploying Loki self-monitoring..."
+    kubectl apply -f "${INFRA_DIR}/loki-standalone-monitoring.yaml"
+
+    # Deploy Grafana self-monitoring
+    log_info "Deploying Grafana self-monitoring..."
+    kubectl apply -f "${INFRA_DIR}/grafana-standalone-monitoring.yaml"
+
+    # Wait for standalone Alloy instances to be ready
+    sleep 5
+    log_info "Waiting for standalone monitoring instances to be ready..."
+
+    for i in {1..20}; do
+        STANDALONE_READY=$(kubectl get alloys -n monitoring -o json 2>/dev/null | jq -r '[.items[] | select(.metadata.name | test("prometheus-observability|loki-exporter|grafana-exporter")) | select(.status.conditions[]? | select(.type=="Ready" and .status=="True"))] | length' 2>/dev/null || echo "0")
+
+        if [ "$STANDALONE_READY" -ge 3 ]; then
+            log_info "All standalone monitoring instances are ready!"
+            break
+        fi
+
+        if [ $i -eq 20 ]; then
+            log_info "Standalone monitoring instances deployed (some may still be initializing)"
+            kubectl get alloys -n monitoring | grep -E "(prometheus-observability|loki-exporter|grafana-exporter)" || true
+        fi
+
+        sleep 3
+    done
+
+    log_info "Standalone monitoring deployed successfully!"
+    log_info "Your observability stack is now monitoring itself!"
+}
+
 # Verify deployment
 verify_deployment() {
-    log_step "Step 7: Verifying deployment"
+    log_step "Step 8: Verifying deployment"
 
     log_info "Checking all components..."
     echo ""
@@ -187,43 +273,51 @@ verify_deployment() {
 show_access_info() {
     log_step "Deployment Complete!"
 
-    echo -e "${GREEN}Observability stack deployed successfully!${NC}\n"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
+    echo -e "${GREEN}  Observability Stack Deployed Successfully!${NC}"
+    echo -e "${GREEN}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}\n"
 
-    echo -e "${BLUE}Access Information:${NC}"
-    echo -e "==================\n"
+    echo -e "${BLUE}📊 Stack Components:${NC}"
+    echo -e "  ✓ Prometheus  - Metrics storage & querying"
+    echo -e "  ✓ Loki        - Log aggregation & storage"
+    echo -e "  ✓ Grafana     - Visualization & dashboards"
+    echo -e "  ✓ Alloy       - Metrics & log collection"
+    echo -e "  ✓ Self-Mon    - Observability stack self-monitoring\n"
 
-    echo -e "${GREEN}Grafana:${NC}"
-    echo -e "  Port-forward:  ${YELLOW}kubectl port-forward -n monitoring svc/grafana 3000:3000${NC}"
+    echo -e "${BLUE}🌐 Access Information:${NC}"
+    echo -e "━━━━━━━━━━━━━━━━━━━━━━\n"
+
+    echo -e "${GREEN}Grafana Dashboard:${NC}"
+    echo -e "  Command:      ${YELLOW}make grafana-dashboard${NC}"
     echo -e "  URL:          ${YELLOW}http://localhost:3000${NC}"
-    echo -e "  Credentials:  ${YELLOW}admin / admin${NC}"
-    echo -e "  (or use Makefile: ${YELLOW}make grafana-dashboard${NC})\n"
+    echo -e "  Credentials:  ${YELLOW}admin / admin${NC}\n"
 
-    echo -e "${GREEN}Prometheus:${NC}"
-    echo -e "  Port-forward:  ${YELLOW}kubectl port-forward -n monitoring svc/prometheus 9090:9090${NC}"
-    echo -e "  URL:          ${YELLOW}http://localhost:9090${NC}"
-    echo -e "  (or use Makefile: ${YELLOW}make prometheus-ui${NC})\n"
+    echo -e "${GREEN}Prometheus UI:${NC}"
+    echo -e "  Command:      ${YELLOW}make prometheus-ui${NC}"
+    echo -e "  URL:          ${YELLOW}http://localhost:9090${NC}\n"
 
-    echo -e "${GREEN}Loki:${NC}"
-    echo -e "  (Access via Grafana datasource)\n"
+    echo -e "${BLUE}🔍 Monitoring Stack Self-Monitoring:${NC}"
+    echo -e "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+    echo -e "  The observability stack is now monitoring itself!"
+    echo -e "  Check Grafana for metrics from:"
+    echo -e "    • Prometheus (job: integrations/unix)"
+    echo -e "    • Loki (job: integrations/unix)"
+    echo -e "    • Grafana (job: integrations/unix)\n"
 
-    echo -e "${GREEN}Grafana Alloy:${NC}"
-    echo -e "  View logs:    ${YELLOW}kubectl logs -n monitoring -l app.kubernetes.io/name=alloy -f${NC}"
-    echo -e "  (or use Makefile: ${YELLOW}make logs-alloy${NC})\n"
-
-    echo -e "${BLUE}Quick Commands:${NC}"
-    echo -e "===============\n"
-    echo -e "  View all pods:        ${YELLOW}kubectl get pods -n monitoring${NC}"
+    echo -e "${BLUE}⚡ Quick Commands:${NC}"
+    echo -e "━━━━━━━━━━━━━━━━━━━\n"
+    echo -e "  View all components:  ${YELLOW}make monitoring-status${NC}"
     echo -e "  View Prometheus logs: ${YELLOW}make logs-prometheus${NC}"
     echo -e "  View Loki logs:       ${YELLOW}make logs-loki${NC}"
     echo -e "  View Alloy logs:      ${YELLOW}make logs-alloy${NC}"
     echo -e "  Destroy stack:        ${YELLOW}make destroy-observability${NC}\n"
 
-    echo -e "${BLUE}Next Steps:${NC}"
-    echo -e "==========="
-    echo -e "1. Port-forward to Grafana: ${YELLOW}make grafana-dashboard${NC}"
-    echo -e "2. Deploy an application with Prometheus annotations"
-    echo -e "3. Check metrics appear in Prometheus/Grafana"
-    echo -e "4. View logs in Grafana Explore (Loki datasource)\n"
+    echo -e "${BLUE}🚀 Next Steps:${NC}"
+    echo -e "━━━━━━━━━━━━━━\n"
+    echo -e "  1. Open Grafana:       ${YELLOW}make grafana-dashboard${NC}"
+    echo -e "  2. Explore dashboards: Check pre-configured datasources"
+    echo -e "  3. View self-metrics:  Search for 'integrations/unix' job"
+    echo -e "  4. Deploy your app:    Add Prometheus scrape annotations\n"
 }
 
 # Main execution
@@ -238,6 +332,7 @@ main() {
     deploy_loki
     deploy_grafana
     deploy_alloy
+    deploy_standalone_monitoring
     verify_deployment
     show_access_info
 }

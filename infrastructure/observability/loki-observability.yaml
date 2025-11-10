@@ -1,0 +1,46 @@
+---
+apiVersion: collectors.grafana.com/v1alpha1
+kind: Alloy
+metadata:
+  name: loki-observability
+  namespace: monitoring
+spec:
+  alloy:
+    configMap:
+      content: |-
+        discovery.kubernetes "loki" {
+          role = "pod"
+          
+          selectors {
+            role = "pod"
+            label = "app=loki"
+          }
+
+          namespaces {
+            names = ["monitoring"]
+          }
+        }
+
+        prometheus.scrape "loki" {
+          targets    = discovery.kubernetes.loki.targets
+          forward_to = [prometheus.relabel.loki_job.receiver]
+        }
+
+        // relabel job so that it reports as "job" = "integrations/unix"
+        prometheus.relabel "loki_job" {
+          forward_to = [prometheus.remote_write.loki_prom.receiver] 
+
+          rule {
+            source_labels = ["job"]
+            target_label  = "job"
+            replacement   = "integrations/unix"
+          }
+        }
+
+        prometheus.remote_write "loki_prom" {
+          endpoint {
+            url = "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/write"
+          }
+        }
+      
+      

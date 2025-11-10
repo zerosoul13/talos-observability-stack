@@ -16,6 +16,7 @@ spec:
       labels:
         app: loki
         component: log-aggregator
+        app.kubernetes.io/name: loki
     spec:
       serviceAccountName: loki
       securityContext:
@@ -67,8 +68,7 @@ spec:
         configMap:
           name: loki-config
       - name: storage
-        persistentVolumeClaim:
-          claimName: loki-pvc
+        emptyDir: {}
 ---
 apiVersion: v1
 kind: ServiceAccount

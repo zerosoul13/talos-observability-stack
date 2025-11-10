@@ -1,304 +1,527 @@
 cluster:
   name: talos-local
 
-# Enable cluster metrics collection
+#
+# Global settings
+#
+
+global:
+  # -- The specific platform for this cluster. Will enable compatibility for some platforms. Supported options: (empty) or "openshift".
+  # @section -- Global Settings
+  platform: ""
+
+  # -- The Kubernetes service. Change this if your cluster DNS is configured differently than the default.
+  # @section -- Global Settings
+  kubernetesAPIService: ""
+
+  # -- How frequently to scrape metrics.
+  # @section -- Global Settings
+  scrapeInterval: 60s
+
+  # -- The timeout for scraping metrics.
+  # @section -- Global Settings
+  scrapeTimeout: 10s
+
+  # -- The protocols to negotiate during a Prometheus metrics scrape, in order of preference.
+  # @section -- Global Settings
+  scrapeProtocols: ["OpenMetricsText1.0.0", "OpenMetricsText0.0.1", "PrometheusText0.0.4"]
+
+  # -- Whether to scrape a classic histogram that’s also exposed as a native histogram.
+  # @section -- Global Settings
+  scrapeClassicHistograms: false
+
+  # -- Sets the max_cache_size for every prometheus.relabel component. ([docs](https://grafana.com/docs/alloy/latest/reference/components/prometheus/prometheus.relabel/#arguments))
+  # This should be at least 2x-5x your largest scrape target or samples appended rate.
+  # @section -- Global Settings
+  maxCacheSize: 100000
+
+#
+# Destinations
+#
+
+# -- The list of destinations where telemetry data will be sent.
+# See the [destinations documentation](https://github.com/grafana/k8s-monitoring-helm/blob/main/charts/k8s-monitoring/docs/destinations/README.md) for more information.
+# @section -- Destinations
+# The list of destinations where telemetry data will be sent.
+destinations:
+  - name: prometheus
+    type: prometheus
+    url: http://prometheus.monitoring.svc.cluster.local:9090/api/v1/write
+  - name: loki
+    type: loki
+    url: http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push
+
+# -- A map of destinations where telemetry data will be sent. Keys will be used as the destination name.
+# See the [destinations documentation](https://github.com/grafana/k8s-monitoring-helm/blob/main/charts/k8s-monitoring/docs/destinations/README.md) for more information.
+# @section -- Destinations
+destinationsMap: {}
+
+#
+# Features
+#
+
+# -- Cluster Monitoring enables observability and monitoring for your Kubernetes Cluster itself.
+# Requires a destination that supports metrics.
+# To see the valid options, please see the [Cluster Monitoring feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-cluster-metrics).
+# @default -- Disabled
+# @section -- Features - Cluster Metrics
 clusterMetrics:
+  # -- Enable gathering Kubernetes Cluster metrics.
+  # @section -- Features - Cluster Metrics
   enabled: true
 
-# Enable pod logs collection
-clusterEvents:
-  enabled: true
+  # -- The destinations where cluster metrics will be sent. If empty, all metrics-capable destinations will be used.
+  # @section -- Features - Cluster Metrics
+  destinations: [ "prometheus" ]
 
-# Configure destinations
-externalServices:
-  prometheus:
-    host: http://prometheus.monitoring.svc.cluster.local:9090
-    protocol: remote_write
-  loki:
-    host: http://loki.monitoring.svc.cluster.local:3100
-    protocol: loki
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Cluster Metrics
+  # @ignored
+  collector: alloy-metrics
 
-alloy:
-  configMap:
-    create: true
-    content: |
-      // Kubernetes service discovery for pods
-      discovery.kubernetes "pods" {
-        role = "pod"
-      }
+  node-exporter:
+    jobLabel: integrations/unix
+  
+  cadvisor:
+    jobLabel: integrations/unix
+  
+  # kube-state-metrics
+  kubeStateMetrics:
+   jobLabel: integrations/unix
 
-      // Kubernetes service discovery for services
-      discovery.kubernetes "services" {
-        role = "service"
-      }
-
-      // Filter pods with prometheus.io/scrape annotation
-      discovery.relabel "filter_pods" {
-        targets = discovery.kubernetes.pods.targets
-
-        // CRITICAL: Keep only pods running on this Alloy pod's node
-        // This prevents duplicate scrapes when running as DaemonSet
-        rule {
-          source_labels = ["__meta_kubernetes_pod_node_name"]
-          action        = "keep"
-          regex         = env("HOSTNAME")
-        }
-
-        // Keep only pods with scrape annotation set to true
-        rule {
-          source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_scrape"]
-          action        = "keep"
-          regex         = "true"
-        }
-
-        // Use custom port if specified
-        rule {
-          source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_port", "__meta_kubernetes_pod_ip"]
-          action        = "replace"
-          regex         = "(\\d+);(([A-Fa-f0-9]{1,4}::?){1,7}[A-Fa-f0-9]{1,4}|([0-9]{1,3}\\.){3}[0-9]{1,3})"
-          replacement   = "[$2]:$1"
-          target_label  = "__address__"
-        }
-
-        // Use custom metrics path if specified
-        rule {
-          source_labels = ["__meta_kubernetes_pod_annotation_prometheus_io_path"]
-          action        = "replace"
-          target_label  = "__metrics_path__"
-          regex         = "(.+)"
-        }
-
-        // Add namespace label
-        rule {
-          source_labels = ["__meta_kubernetes_namespace"]
-          action        = "replace"
-          target_label  = "namespace"
-        }
-
-        // Add pod name label
-        rule {
-          source_labels = ["__meta_kubernetes_pod_name"]
-          action        = "replace"
-          target_label  = "pod"
-        }
-
-        // Add container name label
-        rule {
-          source_labels = ["__meta_kubernetes_pod_container_name"]
-          action        = "replace"
-          target_label  = "container"
-        }
-
-        // Add node name label
-        rule {
-          source_labels = ["__meta_kubernetes_pod_node_name"]
-          action        = "replace"
-          target_label  = "node"
-        }
-      }
-
-      // Scrape metrics from discovered pods
-      prometheus.scrape "pods" {
-        targets    = discovery.relabel.filter_pods.output
-        forward_to = [prometheus.remote_write.default.receiver]
-
-        scrape_interval = "30s"
-        scrape_timeout  = "10s"
-      }
-
-      // Remote write metrics to Prometheus
-      prometheus.remote_write "default" {
-        endpoint {
-          url = "http://prometheus.monitoring.svc.cluster.local:9090/api/v1/write"
-
-          queue_config {
-            capacity             = 10000
-            max_shards           = 10
-            min_shards           = 1
-            max_samples_per_send = 5000
-            batch_send_deadline  = "5s"
-            min_backoff          = "30ms"
-            max_backoff          = "5s"
-          }
-        }
-      }
-
-      // Collect logs from all pods
-      loki.source.kubernetes "pods" {
-        targets    = discovery.kubernetes.pods.targets
-        forward_to = [loki.process.add_labels.receiver]
-      }
-
-      // Add additional labels to logs
-      loki.process "add_labels" {
-        stage.docker {}
-
-        stage.labels {
-          values = {
-            namespace = "",
-            pod       = "",
-            container = "",
-            node      = "",
-          }
-        }
-
-        forward_to = [loki.write.default.receiver]
-      }
-
-      // Push logs to Loki
-      loki.write "default" {
-        endpoint {
-          url = "http://loki.monitoring.svc.cluster.local:3100/loki/api/v1/push"
-        }
-      }
-
-      // Self-monitoring - expose metrics endpoint
-      prometheus.exporter.self "alloy" {}
-
-      prometheus.scrape "alloy" {
-        targets    = prometheus.exporter.self.alloy.targets
-        forward_to = [prometheus.remote_write.default.receiver]
-      }
-
-      // ============================================================================
-      // NODE METRICS via cAdvisor/Kubelet (replaces node-exporter)
-      // ============================================================================
-
-      // Discover Kubernetes nodes
-      discovery.kubernetes "nodes" {
-        role = "node"
-      }
-
-      // Scrape kubelet metrics (container/node metrics)
-      discovery.relabel "kubelet" {
-        targets = discovery.kubernetes.nodes.targets
-
-        // CRITICAL: Keep only the node this Alloy pod is running on
-        // This prevents duplicate scrapes when running as DaemonSet
-        // Uses HOSTNAME env var which contains the node name in DaemonSet
-        rule {
-          source_labels = ["__meta_kubernetes_node_name"]
-          action        = "keep"
-          regex         = env("HOSTNAME")
-        }
-
-        // Use kubelet HTTPS endpoint
-        rule {
-          source_labels = ["__meta_kubernetes_node_name"]
-          target_label  = "__address__"
-          replacement   = "kubernetes.default.svc.cluster.local:443"
-        }
-
-        rule {
-          source_labels = ["__meta_kubernetes_node_name"]
-          regex         = "(.+)"
-          target_label  = "__metrics_path__"
-          replacement   = "/api/v1/nodes/$1/proxy/metrics"
-        }
-
-        // Add node label
-        rule {
-          source_labels = ["__meta_kubernetes_node_name"]
-          target_label  = "node"
-        }
-
-        rule {
-          target_label = "job"
-          replacement  = "kubelet"
-        }
-      }
-
-      prometheus.scrape "kubelet" {
-        targets         = discovery.relabel.kubelet.output
-        forward_to      = [prometheus.remote_write.default.receiver]
-        scrape_interval = "30s"
-        scrape_timeout  = "10s"
-        scheme          = "https"
-        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
-        tls_config {
-          ca_file              = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-          insecure_skip_verify = false
-        }
-      }
-
-      // Scrape cAdvisor metrics (container resource usage)
-      discovery.relabel "cadvisor" {
-        targets = discovery.kubernetes.nodes.targets
-
-        // CRITICAL: Keep only the node this Alloy pod is running on
-        // This prevents duplicate scrapes when running as DaemonSet
-        // Uses HOSTNAME env var which contains the node name in DaemonSet
-        rule {
-          source_labels = ["__meta_kubernetes_node_name"]
-          action        = "keep"
-          regex         = env("HOSTNAME")
-        }
-
-        rule {
-          source_labels = ["__meta_kubernetes_node_name"]
-          target_label  = "__address__"
-          replacement   = "kubernetes.default.svc.cluster.local:443"
-        }
-
-        rule {
-          source_labels = ["__meta_kubernetes_node_name"]
-          regex         = "(.+)"
-          target_label  = "__metrics_path__"
-          replacement   = "/api/v1/nodes/$1/proxy/metrics/cadvisor"
-        }
-
-        rule {
-          source_labels = ["__meta_kubernetes_node_name"]
-          target_label  = "node"
-        }
-
-        rule {
-          target_label = "job"
-          replacement  = "cadvisor"
-        }
-      }
-
-      prometheus.scrape "cadvisor" {
-        targets         = discovery.relabel.cadvisor.output
-        forward_to      = [prometheus.remote_write.default.receiver]
-        scrape_interval = "30s"
-        scrape_timeout  = "10s"
-        scheme          = "https"
-        bearer_token_file = "/var/run/secrets/kubernetes.io/serviceaccount/token"
-
-        tls_config {
-          ca_file              = "/var/run/secrets/kubernetes.io/serviceaccount/ca.crt"
-          insecure_skip_verify = false
-        }
-      }
-
-  resources:
-    requests:
-      cpu: 100m
-      memory: 128Mi
-    limits:
-      cpu: 500m
-      memory: 512Mi
-
-  serviceMonitor:
+  windows-exporter:
+    deploy: false
+    enabled: false
+  
+  opencost:
     enabled: false
 
-  controller:
-    type: deployment
-    replicas: 1
+  # To see additional options, please see the [Cluster Monitoring feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-cluster-metrics).
+
+# -- Cluster events.
+# Requires a destination that supports logs.
+# To see the valid options, please see the [Cluster Events feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-cluster-events).
+# @default -- Disabled
+# @section -- Features - Cluster Events
+clusterEvents:
+  # -- Enable gathering Kubernetes Cluster events.
+  # @section -- Features - Cluster Events
+  enabled: true
+
+  # -- The destinations where cluster events will be sent. If empty, all logs-capable destinations will be used.
+  # @section -- Features - Cluster Events
+  destinations: [ "loki" ]
+
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Cluster Events
+  # @ignored
+  collector: alloy-singleton
+
+  # To see additional options, please see the [Cluster Events feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-cluster-events).
+
+# -- Node logs.
+# Requires a destination that supports logs.
+# To see the valid options, please see the [Node Logs feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-node-logs).
+# @default -- Disabled
+# @section -- Features - Node Logs
+nodeLogs:
+  # -- Enable gathering Kubernetes Cluster Node logs.
+  # @section -- Features - Node Logs
+  enabled: false
+
+  # -- The destinations where logs will be sent. If empty, all logs-capable destinations will be used.
+  # @section -- Features - Node Logs
+  destinations: []
+
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Node Logs
+  # @ignored
+  collector: alloy-logs
+
+  staticLabels:
+    job: "integrations/logs"
+
+  # To see additional options, please see the [Node Logs feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-node-logs).
+
+# -- Pod logs.
+# Requires a destination that supports logs.
+# To see the valid options, please see the [Pod Logs feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-pod-logs).
+# @default -- Disabled
+# @section -- Features - Pod Logs
+podLogs:
+  # -- Enable gathering Kubernetes Pod logs.
+  # @section -- Features - Pod Logs
+  enabled: true
+
+  # -- The destinations where logs will be sent. If empty, all logs-capable destinations will be used.
+  # @section -- Features - Pod Logs
+  destinations: [ "loki" ]
+
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Pod Logs
+  # @ignored
+  collector: alloy-logs
+
+  staticLabels:
+    job: "integrations/logs"
+  
+
+  # To see additional options, please see the [Pod Logs feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-pod-logs).
+
+# -- Pod logs via Kubernetes API.
+# Requires a destination that supports logs.
+# To see the valid options, please see the [Pod Logs via Kubernetes API feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-pod-logs-via-kubernetes-api).
+# @default -- Disabled
+# @section -- Features - Pod Logs via Kubernetes API
+podLogsViaKubernetesApi:
+  # -- Enable gathering Kubernetes Pod logs.
+  # @section -- Features - Pod Logs via Kubernetes API
+  enabled: true
+
+  # -- The destinations where logs will be sent. If empty, all logs-capable destinations will be used.
+  # @section -- Features - Pod Logs via Kubernetes API
+  destinations: [ "loki" ]
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Pod Logs via Kubernetes API
+  # @ignored
+  collector: alloy-logs
+
+  staticLabels:
+    job: "integrations/logs"
+
+  # To see additional options, please see the [Pod Logs via Kubernetes API feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-pod-logs-via-kubernetes-api).
+
+# -- Application Observability.
+# Requires destinations that supports metrics, logs, and traces.
+# To see the valid options, please see the [Application Observability feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-application-observability).
+# @default -- Disabled
+# @section -- Features - Application Observability
+applicationObservability:
+  # -- Enable receiving Application Observability.
+  # @section -- Features - Application Observability
+  enabled: false
+
+  # -- The destinations where application data will be sent. If empty, all capable destinations will be used.
+  # @section -- Features - Application Observability
+  destinations: []
+
+  # -- The receivers used for receiving application data.
+  # @section -- Features - Application Observability
+  receivers: {}
+
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Application Observability
+  # @ignored
+  collector: alloy-receiver
+
+  # To see additional options, please see the [Application Observability feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-application-observability).
+
+# -- Auto-Instrumentation.
+# Requires destinations that supports metrics, logs, and traces.
+# To see the valid options, please see the [Auto-Instrumentation feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-auto-instrumentation).
+# @default -- Disabled
+# @section -- Features - Auto-Instrumentation
+autoInstrumentation:
+  # -- Enable automatic instrumentation for applications.
+  # @section -- Features - Auto-Instrumentation
+  enabled: false
+
+  # -- The destinations where application data will be sent. If empty, all capable destinations will be used.
+  # @section -- Features - Auto-Instrumentation
+  destinations: []
+
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Auto-Instrumentation
+  # @ignored
+  collector: alloy-metrics
+
+  # To see additional options, please see the [Auto-Instrumentation feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-auto-instrumentation).
+
+# -- Annotation Autodiscovery enables gathering metrics from Kubernetes Pods and Services discovered by special annotations.
+# Requires a destination that supports metrics.
+# To see the valid options, please see the [Annotation Autodiscovery feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-annotation-autodiscovery).
+# @default -- Disabled
+# @section -- Features - Annotation Autodiscovery
+annotationAutodiscovery:
+  # -- Enable gathering metrics from Kubernetes Pods and Services discovered by special annotations.
+  # @section -- Features - Annotation Autodiscovery
+  enabled: true
+
+  # -- The destinations where cluster metrics will be sent. If empty, all metrics-capable destinations will be used.
+  # @section -- Features - Annotation Autodiscovery
+  destinations: [ "prometheus" ]
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Annotation Autodiscovery
+  # @ignored
+  collector: alloy-metrics
+
+  # To see additional options, please see the [Annotation Autodiscovery feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-annotation-autodiscovery).
+
+# -- Prometheus Operator Objects enables the gathering of metrics from objects like Probes, PodMonitors, and
+# ServiceMonitors. Requires a destination that supports metrics.
+# To see the valid options, please see the [Prometheus Operator Objects feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-prometheus-operator-objects).
+# @default -- Disabled
+# @section -- Features - Prometheus Operator Objects
+prometheusOperatorObjects:
+  # -- Enable gathering metrics from Prometheus Operator Objects.
+  # @section -- Features - Prometheus Operator Objects
+  enabled: false
+
+  # -- The destinations where metrics will be sent. If empty, all metrics-capable destinations will be used.
+  # @section -- Features - Prometheus Operator Objects
+  destinations: []
+
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Prometheus Operator Objects
+  # @ignored
+  collector: alloy-metrics
+
+  # To see additional options, please see the [Prometheus Operator Objects feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-prometheus-operator-objects).
+
+# -- Profiling enables gathering profiles from applications.
+# Requires a destination that supports profiles.
+# To see the valid options, please see the [Profiling feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-profiling).
+# @default -- Disabled
+# @section -- Features - Profiling
+profiling:
+  # -- Enable gathering profiles from applications.
+  # @section -- Features - Profiling
+  enabled: false
+
+  # -- The destinations where profiles will be sent. If empty, all profiles-capable destinations will be used.
+  # @section -- Features - Profiling
+  destinations: []
+
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Profiling
+  # @ignored
+  collector: alloy-profiles
+
+  # To see additional options, please see the [Profiling feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-profiling).
+
+# -- Profiles Receiver enables receiving profiles from applications.
+# Requires a destination that supports profiles.
+# To see the valid options, please see the [Profiles Receiver feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-profiles-receiver).
+# @default -- Disabled
+# @section -- Features - Profiles Receiver
+profilesReceiver:
+  # -- Enable gathering profiles from applications.
+  # @section -- Features - Profiles Receiver
+  enabled: false
+
+  # -- The destinations where profiles will be sent. If empty, all profiles-capable destinations will be used.
+  # @section -- Features - Profiles Receiver
+  destinations: []
+
+  # -- Which collector to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Profiles Receiver
+  # @ignored
+  collector: alloy-receiver
+
+  # To see additional options, please see the [Profiles Receiver feature documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-profiles-receiver).
+
+# -- Service Integrations enables gathering telemetry data for common services and applications deployed to Kubernetes.
+# To see the valid options, please see the [Service Integrations documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-integrations).
+# @default -- No integrations enabled
+# @section -- Features - Service Integrations
+integrations:
+  # -- The destinations where integration metrics will be sent. If empty, all metrics-capable destinations will be used.
+  # @section -- Features - Service Integrations
+  destinations: [ "prometheus" ]
+
+  # -- Which collectors to assign this feature to. Do not change this unless you are sure of what you are doing.
+  # @section -- Features - Service Integrations
+  # @ignored
+  collector: alloy-metrics
 
   alloy:
-    clustering:
-      enabled: false
+    instances:
+    - name: alloy-metrics
+      labelSelectors:
+          app.kubernetes.io/instance: alloy
+      staticLabels:
+        job: integrations/unix
+    - name: alloy-singleton
+      labelSelectors:
+          app.kubernetes.io/name: alloy-singleton
+    - name: alloy-logs
+      labelSelectors:
+          app.kubernetes.io/name: alloy-logs
+      staticLabels:
+        job: integrations/logs
+    - name: alloy-receiver
+      labelSelectors:
+          app.kubernetes.io/name: alloy-receiver
+    
 
+  # To see additional options, please see the [Service Integrations documentation](https://github.com/grafana/k8s-monitoring-helm/tree/main/charts/k8s-monitoring/charts/feature-integrations).
+
+# Self-reporting creates a single metric and log that reports anonymized information about how this Helm chart was
+# configured. It reports features enabled, destinations types used, and alloy instances enabled. It does not report any
+# actual telemetry data, credentials or configuration, or send any data to any destination other than the ones
+# configured above.
+# @section -- Features - Self-reporting
+selfReporting:
+  # -- Enable Self-reporting.
+  # @section -- Features - Self-reporting
+  enabled: true
+
+  # -- The destinations where self-report metrics will be sent. If empty, all metrics-capable destinations will be used.
+  # @section -- Features - Self-reporting
+  destinations: [ "prometheus" ]
+
+  # -- How frequently to generate self-report metrics. This does utilize the global scrapeInterval setting.
+  # @default -- 60s
+  # @section -- Features - Self-reporting
+  scrapeInterval: ""
+
+#
+# Collectors (Alloy instances)
+#
+
+# An Alloy instance for collecting metrics.
+# To see all valid settings, please see the [Alloy Collector documentation](https://github.com/grafana/k8s-monitoring-helm/blob/main/charts/k8s-monitoring/docs/collectors/alloy.md).
+alloy-metrics:
+  # -- Deploy the Alloy instance for collecting metrics.
+  # @section -- Collectors - Alloy Metrics
+  enabled: true
+
+
+# An Alloy instance for data sources required to be deployed on a single replica.
+# To see all valid settings, please see the [Alloy Collector documentation](https://github.com/grafana/k8s-monitoring-helm/blob/main/charts/k8s-monitoring/docs/collectors/alloy.md).
+alloy-singleton:
+  # -- Deploy the Alloy instance for data sources required to be deployed on a single replica.
+  # @section -- Collectors - Alloy Singleton
+  enabled: true
+
+
+# An Alloy instance for collecting log data.
+# To see all valid settings, please see the [Alloy Collector documentation](https://github.com/grafana/k8s-monitoring-helm/blob/main/charts/k8s-monitoring/docs/collectors/alloy.md).
+alloy-logs:
+  enabled: true
+  alloy:
+    clustering:
+      enabled: true
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 512Mi
     mounts:
       varlog: true
 
-# RBAC permissions for service discovery
-rbac:
-  create: true
+# An Alloy instance for opening receivers to collect application data.
+# To see all valid settings, please see the [Alloy Collector documentation](https://github.com/grafana/k8s-monitoring-helm/blob/main/charts/k8s-monitoring/docs/collectors/alloy.md).
+alloy-receiver:
+  # -- Deploy the Alloy instance for opening receivers to collect application data.
+  # @section -- Collectors - Alloy Receiver
+  enabled: false
 
-serviceAccount:
-  create: true
-  name: alloy
+  alloy:
+    # -- The ports to expose for the Alloy receiver.
+    # @section -- Collectors - Alloy Receiver
+    extraPorts: []
+
+  extraService:
+    # -- Create an extra service for the Alloy receiver. This service will mirror the alloy-receiver service, but its
+    # name can be customized to match existing application settings.
+    # @section -- Collectors - Alloy Receiver
+    enabled: false
+    # -- The name of the extra service to create. This will result in the format `<release-name>-<name>`.
+    # @section -- Collectors - Alloy Receiver
+    name: alloy
+    # -- If set, the full name of the extra service to create. This will result in the format `<fullname>`.
+    # @section -- Collectors - Alloy Receiver
+    fullname: ""
+
+# An Alloy instance for gathering profiles.
+# To see all valid settings, please see the [Alloy Collector documentation](https://github.com/grafana/k8s-monitoring-helm/blob/main/charts/k8s-monitoring/docs/collectors/alloy.md).
+alloy-profiles:
+  # -- Deploy the Alloy instance for gathering profiles.
+  # @section -- Collectors - Alloy Profiles
+  enabled: false
+
+collectorCommon:
+  # -- Settings to apply to all Alloy instances created by this Helm chart. This includes Alloy instances created by
+  # enabling Tail Sampling or Service Graph Metrics.
+  # @section -- Collectors - Common
+  alloy: {}
+
+# The Alloy Operator is a Kubernetes Operator that manages Alloy instances and their lifecycle.
+# To see all valid settings, please see the [Alloy Operator documentation](https://github.com/grafana/alloy-operator/tree/main/charts/alloy-operator).
+alloy-operator:
+  # -- Deploy the Alloy Operator.
+  # @section -- Alloy Operator
+  deploy: true
+
+  waitForAlloyRemoval:
+    # -- Utilize a Helm Hook to wait for all Alloy instances to be removed before uninstalling the Alloy Operator.
+    # This ensures that all Alloy instances are properly cleaned up before the operator is removed.
+    # @section -- Alloy Operator
+    enabled: true
+
+    # -- The image to use for the Helm Hook that ensures that Alloy instances are removed during uninstall.
+    # @section -- Alloy Operator
+    image:
+      registry: ghcr.io
+      repository: grafana/helm-chart-toolbox-kubectl
+      tag: 0.1.1
+      digest: ""
+      pullPolicy: IfNotPresent
+      pullSecrets: []
+
+    # -- Annotations to apply to the Pod for the Helm Hook to wait for all Alloy instances to be removed before
+    # uninstalling the Alloy Operator
+    # @section -- Alloy Operator
+    podAnnotations: {}
+
+    # -- Labels to apply to the Pod for the Helm Hook to wait for all Alloy instances to be removed before uninstalling
+    # the Alloy Operator
+    # @section -- Alloy Operator
+    podLabels:
+      sidecar.istio.io/inject: "false"
+      linkerd.io/inject: disabled
+
+    # -- Set the resource field for the Helm Hook that ensures that Alloy instances are removed during uninstall.
+    # @section -- Alloy Operator
+    resources: {}
+#      requests:
+#       cpu: 10m
+#       memory: 64Mi
+#
+#      limits:
+#       cpu: 500m
+#       memory: 128Mi
+
+    # -- Tolerations to apply to the Helm Hook that ensures that Alloy instances are removed during uninstall.
+    # @section -- Alloy Operator
+    tolerations: []
+
+    # -- Node selector to use for the Helm Hook that ensures that Alloy instances are removed during uninstall.
+    # @section -- Alloy Operator
+    nodeSelector:
+      kubernetes.io/os: linux
+
+# -- Deploy additional manifest objects
+# @section -- Extra Objects
+extraObjects: []
+# - apiVersion: external-secrets.io/v1beta1
+#   kind: ExternalSecret
+#   metadata:
+#     name: prometheus-secret
+#   spec:
+#     refreshInterval: 1h
+#     secretStoreRef:
+#       kind: SecretStore
+#       name: example
+#     target:
+#       template:
+#         data:
+#           prometheus_host: "{{ .Values.externalServices.prometheus.host }}"
+#           username: "{{`{{ .username }}`}}"
+#           password: "{{`{{ .password }}`}}"
+#     dataFrom:
+#     - extract:
+#         key: mysecret
