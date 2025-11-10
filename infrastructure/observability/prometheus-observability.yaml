@@ -28,12 +28,24 @@ spec:
 
         // relabel job so that it reports as "job" = "integrations/unix"
         prometheus.relabel "prometheus_job" {
-          forward_to = [prometheus.remote_write.prometheus_prom.receiver] 
+          forward_to = [prometheus.remote_write.prometheus_prom.receiver]
+
+          rule {
+            source_labels = ["app"]
+            target_label  = "app"
+            replacement   = "prometheus"
+          }
 
           rule {
             source_labels = ["job"]
             target_label  = "job"
             replacement   = "integrations/unix"
+          }
+
+          rule {
+            source_labels = ["instance"]
+            target_label  = "instance"
+            replacement   = constants.hostname
           }
         }
 
